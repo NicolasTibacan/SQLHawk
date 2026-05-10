@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SQLHawk Report</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 24px; color: #111827; }
+    .summary { background: #f9fafb; border: 1px solid #e5e7eb; padding: 16px; border-radius: 8px; }
+    .badge { display: inline-block; padding: 2px 8px; border-radius: 999px; background: #e0f2fe; color: #075985; }
+    .finding { border: 1px solid #e5e7eb; border-left: 6px solid #f97316; padding: 12px; margin: 12px 0; border-radius: 8px; }
+    .finding h3 { margin: 0 0 6px 0; }
+    .meta { color: #6b7280; font-size: 14px; }
+  </style>
+</head>
+<body>
+  <h1>SQLHawk Security Report</h1>
+  <div class="summary">
+    <div><strong>Target:</strong> {{ target_name }}</div>
+    <div><strong>Risk score:</strong> {{ risk_score }} <span class="badge">{{ risk_level }}</span></div>
+    <div><strong>Strength score:</strong> {{ strength_score }}</div>
+    <div class="meta">Generated at {{ generated_at }}</div>
+  </div>
+
+  <h2>Findings</h2>
+  {% if findings and findings|length > 0 %}
+    {% for finding in findings %}
+      <div class="finding">
+        <h3>{{ finding.title }}</h3>
+        <div class="meta">Severity: {{ finding.severity }}</div>
+        <p>{{ finding.description }}</p>
+        {% if finding.evidence %}
+          <p><strong>Evidence:</strong> {{ finding.evidence }}</p>
+        {% endif %}
+        <p><strong>Recommendation:</strong> {{ finding.recommendation }}</p>
+      </div>
+    {% endfor %}
+  {% else %}
+    <p>No findings were reported.</p>
+  {% endif %}
+
+  <h2>Recommendations</h2>
+  {% if recommendations and recommendations|length > 0 %}
+    <ul>
+      {% for item in recommendations %}
+        <li><strong>{{ item.title }}</strong>: {{ item.recommendation }}</li>
+      {% endfor %}
+    </ul>
+  {% else %}
+    <p>No recommendations were generated.</p>
+  {% endif %}
+</body>
+</html>
