@@ -280,6 +280,34 @@ def _scan_rows(scans: list[dict]) -> list[list[Any]]:
     return rows
 
 
+def _finding_rows(findings: list[dict]) -> list[list[Any]]:
+    rows = []
+    for finding in findings:
+        rows.append(
+            [
+                finding.get("severity"),
+                finding.get("title"),
+                finding.get("description"),
+                finding.get("recommendation"),
+                finding.get("evidence") or "-",
+            ]
+        )
+    return rows
+
+
+def _recommendation_rows(recommendations: list[dict]) -> list[list[Any]]:
+    rows = []
+    for item in recommendations:
+        rows.append(
+            [
+                item.get("severity"),
+                item.get("title"),
+                item.get("recommendation"),
+            ]
+        )
+    return rows
+
+
 def _metric_cards(scans: list[dict]) -> str:
     total = len(scans)
     if not scans:
@@ -397,18 +425,7 @@ def load_findings(
     if severity and severity != "all":
         findings = [f for f in findings if f.get("severity") == severity]
 
-    rows = []
-    for finding in findings:
-        rows.append(
-            [
-                finding.get("severity"),
-                finding.get("title"),
-                finding.get("description"),
-                finding.get("recommendation"),
-                finding.get("evidence") or "-",
-            ]
-        )
-
+    rows = _finding_rows(findings)
     return rows, f"Loaded {len(findings)} findings.", _scan_summary(scan)
 
 
@@ -425,16 +442,7 @@ def load_recommendations(
     if error:
         return [], f"Failed to load scan: {error}"
 
-    rows = []
-    for item in scan.get("recommendations", []):
-        rows.append(
-            [
-                item.get("severity"),
-                item.get("title"),
-                item.get("recommendation"),
-            ]
-        )
-
+    rows = _recommendation_rows(scan.get("recommendations", []))
     return rows, f"Loaded {len(rows)} recommendations."
 
 
@@ -521,9 +529,9 @@ def create_scan(
     password: str,
     database: str,
     ssl: bool,
-) -> tuple[str, dict]:
+) -> tuple[str, str, list[list[Any]], list[list[Any]]]:
     if not token:
-        return "Login required.", {}
+        return "Login required.", "", [], []
 
     base_url = _normalize_api_url(api_url)
     payload = {
@@ -543,8 +551,12 @@ def create_scan(
 
     result, error = _request_json("POST", f"{base_url}/scans", token=token, json=payload)
     if error:
-        return f"Scan failed: {error}", {}
-    return "Scan completed.", result
+        return f"Scan failed: {error}", "", [], []
+
+    summary = _scan_summary(result)
+    findings_rows = _finding_rows(result.get("findings", []))
+    recommendation_rows = _recommendation_rows(result.get("recommendations", []))
+    return "Scan completed.", summary, findings_rows, recommendation_rows
 
 
 def update_profile(
@@ -569,9 +581,22 @@ def update_profile(
     return "Profile updated."
 
 
-def set_screen(screen: str) -> tuple[dict, dict, dict, dict, dict, dict]:
+def toggle_layout_after_login(token: str) -> tuple[dict, dict, dict]:
+    if token:
+        return (
+            gr.update(visible=False),
+            gr.update(visible=True),
+            gr.update(value="Dashboard"),
+        )
     return (
-        gr.update(visible=screen == "Login"),
+        gr.update(visible=True),
+        gr.update(visible=False),
+        gr.update(value="Dashboard"),
+    )
+
+
+def set_screen(screen: str) -> tuple[dict, dict, dict, dict, dict]:
+    return (
         gr.update(visible=screen == "Dashboard"),
         gr.update(visible=screen == "Vulnerabilidades"),
         gr.update(visible=screen == "Recomendaciones"),
@@ -585,149 +610,174 @@ with gr.Blocks(css=CSS, title="SQLHawk Frontend") as demo:
     user_state = gr.State({})
     scans_state = gr.State([])
 
-    with gr.Row():
-        with gr.Column(scale=1, elem_id="sidebar"):
-            gr.Markdown("## Control")
-            api_url_input = gr.Textbox(label="API URL", value=DEFAULT_API_URL)
-            api_ping_btn = gr.Button("Probar API")
-            api_status = gr.Markdown("Listo.")
+    api_url_input = gr.Textbox(label="API URL", value=DEFAULT_API_URL, visible=False)
+    with gr.Group(visible=True) as login_layout:
+        gr.HTML(
+            """
+            <div id="hero">
+              <div class="hero-title">SQLHawk</div>
+              <div class="hero-sub">Visibilidad de seguridad para tus bases de datos.</div>
+            </div>
+            """,
+            elem_id="hero",
+        )
 
-            nav = gr.Radio(
-                label="Navegacion",
-                choices=[
-                    "Login",
-                    "Dashboard",
-                    "Vulnerabilidades",
-                    "Recomendaciones",
-                    "Nuevo scan",
-                    "Perfil",
-                ],
-                value="Login",
-                elem_id="nav",
-            )
-            login_badge = gr.Markdown("Not signed in")
+        with gr.Group(elem_classes=["panel"]):
+            gr.Markdown("### Login")
+            with gr.Row():
+                login_email = gr.Textbox(label="Email")
+                login_password = gr.Textbox(label="Password", type="password")
+            login_btn = gr.Button("Entrar")
+            login_status = gr.Markdown()
 
-        with gr.Column(scale=3):
-            gr.HTML(
-                """
-                <div id="hero">
-                  <div class="hero-title">SQLHawk</div>
-                  <div class="hero-sub">Visibilidad de seguridad para tus bases de datos.</div>
-                </div>
-                """,
-                elem_id="hero",
-            )
+        with gr.Group(elem_classes=["panel"]):
+            gr.Markdown("### Registro")
+            with gr.Row():
+                register_email = gr.Textbox(label="Email")
+                register_password = gr.Textbox(label="Password", type="password")
+            register_name = gr.Textbox(label="Full name (optional)")
+            register_btn = gr.Button("Crear cuenta")
+            register_status = gr.Markdown()
 
-            with gr.Group(visible=True) as login_group:
-                with gr.Group(elem_classes=["panel"]):
-                    gr.Markdown("### Login")
-                    with gr.Row():
-                        login_email = gr.Textbox(label="Email")
-                        login_password = gr.Textbox(label="Password", type="password")
-                    login_btn = gr.Button("Entrar")
-                    login_status = gr.Markdown()
+    with gr.Group(visible=False) as app_layout:
+        with gr.Row():
+            with gr.Column(scale=1, elem_id="sidebar"):
+                gr.Markdown("## Navegacion")
+                nav = gr.Radio(
+                    label="Pantallas",
+                    choices=[
+                        "Dashboard",
+                        "Vulnerabilidades",
+                        "Recomendaciones",
+                        "Nuevo scan",
+                        "Perfil",
+                    ],
+                    value="Dashboard",
+                    elem_id="nav",
+                )
+                login_badge = gr.Markdown("Not signed in")
 
-                with gr.Group(elem_classes=["panel"]):
-                    gr.Markdown("### Registro")
-                    with gr.Row():
-                        register_email = gr.Textbox(label="Email")
-                        register_password = gr.Textbox(label="Password", type="password")
-                    register_name = gr.Textbox(label="Full name (optional)")
-                    register_btn = gr.Button("Crear cuenta")
-                    register_status = gr.Markdown()
+            with gr.Column(scale=3):
+                gr.HTML(
+                    """
+                    <div id="hero">
+                      <div class="hero-title">SQLHawk</div>
+                      <div class="hero-sub">Visibilidad de seguridad para tus bases de datos.</div>
+                    </div>
+                    """,
+                    elem_id="hero",
+                )
 
-            with gr.Group(visible=False) as dashboard_group:
-                with gr.Group(elem_classes=["panel"]):
-                    gr.Markdown("### Dashboard")
-                    dashboard_metrics = gr.HTML()
-                    refresh_btn = gr.Button("Refrescar scans")
-                    dashboard_status = gr.Markdown()
-                    scan_table = gr.Dataframe(
-                        headers=["ID", "Target", "Type", "Risk", "Level", "Started"],
-                        datatype=["number", "str", "str", "number", "str", "str"],
-                        interactive=False,
-                        elem_classes=["dataframe"],
-                    )
-
-            with gr.Group(visible=False) as vuln_group:
-                with gr.Group(elem_classes=["panel"]):
-                    gr.Markdown("### Vulnerabilidades")
-                    with gr.Row():
-                        vuln_scan = gr.Dropdown(label="Scan", choices=[])
-                        vuln_severity = gr.Dropdown(
-                            label="Severity",
-                            choices=["all", "low", "medium", "high", "critical"],
-                            value="all",
+                with gr.Group(visible=True) as dashboard_group:
+                    with gr.Group(elem_classes=["panel"]):
+                        gr.Markdown("### Dashboard")
+                        dashboard_metrics = gr.HTML()
+                        refresh_btn = gr.Button("Refrescar scans")
+                        dashboard_status = gr.Markdown()
+                        scan_table = gr.Dataframe(
+                            headers=["ID", "Target", "Type", "Risk", "Level", "Started"],
+                            datatype=["number", "str", "str", "number", "str", "str"],
+                            interactive=False,
+                            elem_classes=["dataframe"],
                         )
-                    vuln_load = gr.Button("Cargar findings")
-                    vuln_status = gr.Markdown()
-                    vuln_summary = gr.HTML()
-                    vuln_table = gr.Dataframe(
-                        headers=[
-                            "Severity",
-                            "Title",
-                            "Description",
-                            "Recommendation",
-                            "Evidence",
-                        ],
-                        datatype=["str", "str", "str", "str", "str"],
-                        interactive=False,
-                        elem_classes=["dataframe"],
-                    )
 
-            with gr.Group(visible=False) as reco_group:
-                with gr.Group(elem_classes=["panel"]):
-                    gr.Markdown("### Recomendaciones")
-                    reco_scan = gr.Dropdown(label="Scan", choices=[])
-                    reco_load = gr.Button("Cargar recomendaciones")
-                    reco_status = gr.Markdown()
-                    reco_table = gr.Dataframe(
-                        headers=["Severity", "Title", "Recommendation"],
-                        datatype=["str", "str", "str"],
-                        interactive=False,
-                        elem_classes=["dataframe"],
-                    )
-                    gr.HTML("<div style='margin-top: 10px;'><span class='badge'>Descargas</span></div>")
-                    report_scan = gr.Dropdown(label="Scan para reporte", choices=[])
-                    with gr.Row():
-                        report_pdf_btn = gr.Button("Descargar PDF")
-                        report_json_btn = gr.Button("Descargar JSON")
-                        report_html_btn = gr.Button("Ver HTML")
-                    report_status = gr.Markdown()
-                    report_file = gr.File(label="Archivo", interactive=False)
-                    report_html = gr.HTML()
-
-            with gr.Group(visible=False) as scan_group:
-                with gr.Group(elem_classes=["panel"]):
-                    gr.Markdown("### Nuevo scan")
-                    target_name = gr.Textbox(label="Target name")
-                    with gr.Row():
-                        db_type = gr.Dropdown(
-                            label="DB type",
-                            choices=["postgres", "mysql", "workbench"],
-                            value="postgres",
+                with gr.Group(visible=False) as vuln_group:
+                    with gr.Group(elem_classes=["panel"]):
+                        gr.Markdown("### Vulnerabilidades")
+                        with gr.Row():
+                            vuln_scan = gr.Dropdown(label="Scan", choices=[])
+                            vuln_severity = gr.Dropdown(
+                                label="Severity",
+                                choices=["all", "low", "medium", "high", "critical"],
+                                value="all",
+                            )
+                        vuln_load = gr.Button("Cargar findings")
+                        vuln_status = gr.Markdown()
+                        vuln_summary = gr.HTML()
+                        vuln_table = gr.Dataframe(
+                            headers=[
+                                "Severity",
+                                "Title",
+                                "Description",
+                                "Recommendation",
+                                "Evidence",
+                            ],
+                            datatype=["str", "str", "str", "str", "str"],
+                            interactive=False,
+                            elem_classes=["dataframe"],
                         )
-                        host = gr.Textbox(label="Host", value="127.0.0.1")
-                        port = gr.Number(label="Port", value=5432)
-                    with gr.Row():
-                        username = gr.Textbox(label="Username")
-                        password = gr.Textbox(label="Password", type="password")
-                    database = gr.Textbox(label="Database")
-                    ssl = gr.Checkbox(label="Use SSL", value=False)
-                    scan_btn = gr.Button("Ejecutar scan")
-                    scan_status = gr.Markdown()
-                    scan_result = gr.JSON()
 
-            with gr.Group(visible=False) as profile_group:
-                with gr.Group(elem_classes=["panel"]):
-                    gr.Markdown("### Perfil")
-                    profile_email = gr.Textbox(label="Email", interactive=False)
-                    profile_name = gr.Textbox(label="Full name")
-                    profile_password = gr.Textbox(label="New password", type="password")
-                    profile_btn = gr.Button("Actualizar perfil")
-                    profile_status = gr.Markdown()
+                with gr.Group(visible=False) as reco_group:
+                    with gr.Group(elem_classes=["panel"]):
+                        gr.Markdown("### Recomendaciones")
+                        reco_scan = gr.Dropdown(label="Scan", choices=[])
+                        reco_load = gr.Button("Cargar recomendaciones")
+                        reco_status = gr.Markdown()
+                        reco_table = gr.Dataframe(
+                            headers=["Severity", "Title", "Recommendation"],
+                            datatype=["str", "str", "str"],
+                            interactive=False,
+                            elem_classes=["dataframe"],
+                        )
+                        gr.HTML("<div style='margin-top: 10px;'><span class='badge'>Descargas</span></div>")
+                        report_scan = gr.Dropdown(label="Scan para reporte", choices=[])
+                        with gr.Row():
+                            report_pdf_btn = gr.Button("Descargar PDF")
+                            report_json_btn = gr.Button("Descargar JSON")
+                            report_html_btn = gr.Button("Ver HTML")
+                        report_status = gr.Markdown()
+                        report_file = gr.File(label="Archivo", interactive=False)
+                        report_html = gr.HTML()
 
-    api_ping_btn.click(ping_api, inputs=[api_url_input], outputs=[api_status])
+                with gr.Group(visible=False) as scan_group:
+                    with gr.Group(elem_classes=["panel"]):
+                        gr.Markdown("### Nuevo scan")
+                        target_name = gr.Textbox(label="Target name")
+                        with gr.Row():
+                            db_type = gr.Dropdown(
+                                label="DB type",
+                                choices=["postgres", "mysql", "workbench"],
+                                value="postgres",
+                            )
+                            host = gr.Textbox(label="Host", value="127.0.0.1")
+                            port = gr.Number(label="Port", value=5432)
+                        with gr.Row():
+                            username = gr.Textbox(label="Username")
+                            password = gr.Textbox(label="Password", type="password")
+                        database = gr.Textbox(label="Database")
+                        ssl = gr.Checkbox(label="Use SSL", value=False)
+                        scan_btn = gr.Button("Ejecutar scan")
+                        scan_status = gr.Markdown()
+                        scan_summary = gr.HTML()
+                        gr.Markdown("#### Vulnerabilidades detectadas")
+                        scan_findings = gr.Dataframe(
+                            headers=[
+                                "Severity",
+                                "Title",
+                                "Description",
+                                "Recommendation",
+                                "Evidence",
+                            ],
+                            datatype=["str", "str", "str", "str", "str"],
+                            interactive=False,
+                            elem_classes=["dataframe"],
+                        )
+                        gr.Markdown("#### Recomendaciones")
+                        scan_recommendations = gr.Dataframe(
+                            headers=["Severity", "Title", "Recommendation"],
+                            datatype=["str", "str", "str"],
+                            interactive=False,
+                            elem_classes=["dataframe"],
+                        )
+
+                with gr.Group(visible=False) as profile_group:
+                    with gr.Group(elem_classes=["panel"]):
+                        gr.Markdown("### Perfil")
+                        profile_email = gr.Textbox(label="Email", interactive=False)
+                        profile_name = gr.Textbox(label="Full name")
+                        profile_password = gr.Textbox(label="New password", type="password")
+                        profile_btn = gr.Button("Actualizar perfil")
+                        profile_status = gr.Markdown()
 
     login_btn.click(
         login_action,
@@ -752,6 +802,10 @@ with gr.Blocks(css=CSS, title="SQLHawk Frontend") as demo:
             reco_scan,
             report_scan,
         ],
+    ).then(
+        toggle_layout_after_login,
+        inputs=[token_state],
+        outputs=[login_layout, app_layout, nav],
     )
 
     register_btn.click(
@@ -818,7 +872,7 @@ with gr.Blocks(css=CSS, title="SQLHawk Frontend") as demo:
             database,
             ssl,
         ],
-        outputs=[scan_status, scan_result],
+        outputs=[scan_status, scan_summary, scan_findings, scan_recommendations],
     ).then(
         refresh_scans,
         inputs=[api_url_input, token_state],
@@ -843,7 +897,6 @@ with gr.Blocks(css=CSS, title="SQLHawk Frontend") as demo:
         set_screen,
         inputs=[nav],
         outputs=[
-            login_group,
             dashboard_group,
             vuln_group,
             reco_group,

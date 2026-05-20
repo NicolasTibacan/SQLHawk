@@ -12,7 +12,8 @@ router = APIRouter()
 
 @router.post("/auth/register", response_model=UserOut)
 def register(payload: UserCreate, db: Session = Depends(get_db)) -> User:
-    existing = db.query(User).filter(User.email == payload.email).first()
+    email = payload.email.strip().lower()
+    existing = db.query(User).filter(User.email == email).first()
     if existing:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -20,7 +21,7 @@ def register(payload: UserCreate, db: Session = Depends(get_db)) -> User:
         )
 
     user = User(
-        email=payload.email,
+        email=email,
         full_name=payload.full_name,
         hashed_password=hash_password(payload.password),
     )
@@ -35,12 +36,18 @@ def login(
     form_data: OAuth2PasswordRequestForm = Depends(),
     db: Session = Depends(get_db),
 ) -> Token:
-    user = db.query(User).filter(User.email == form_data.username).first()
+    email = form_data.username.strip().lower()
+    user = db.query(User).filter(User.email == email).first()
     if not user or not verify_password(form_data.password, user.hashed_password):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect email or password",
             headers={"WWW-Authenticate": "Bearer"},
+        )
+    if not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Account is disabled",
         )
 
     token = create_access_token(subject=user.email)

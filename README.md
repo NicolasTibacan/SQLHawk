@@ -43,7 +43,7 @@ pip install -r backend/requirements.txt
 Crea backend/.env con estas variables minimas:
 ```
 API_DATABASE_URL=sqlite:///./data/sqlhawk.db
-JWT_SECRET_KEY=change-me
+JWT_SECRET_KEY=CHANGE_ME_WITH_AT_LEAST_32_CHARS
 JWT_ALGORITHM=HS256
 ACCESS_TOKEN_EXPIRES_MINUTES=60
 REPORTS_DIR=./data/reports
@@ -150,7 +150,8 @@ Frontend:
 ## Seguridad recomendada
 - Usar cuentas de solo lectura para la base objetivo.
 - Evitar exponer el API publico sin auth.
-- Rotar JWT_SECRET_KEY en entornos productivos.
+- Rotar JWT_SECRET_KEY en entornos productivos (minimo 32 caracteres).
+- Las contrasenas deben tener 12+ caracteres con mayuscula, minuscula, numero y simbolo.
 - Proteger la carpeta de reportes si contiene datos sensibles.
 
 ## Troubleshooting

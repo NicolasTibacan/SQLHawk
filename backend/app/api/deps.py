@@ -32,6 +32,7 @@ def get_current_user(
             token,
             settings.jwt_secret_key,
             algorithms=[settings.jwt_algorithm],
+            options={"require_exp": True, "require_sub": True},
         )
         subject = payload.get("sub")
         if not subject:
@@ -40,6 +41,6 @@ def get_current_user(
         raise credentials_error from exc
 
     user = db.query(User).filter(User.email == subject).first()
-    if not user:
+    if not user or not user.is_active:
         raise credentials_error
     return user

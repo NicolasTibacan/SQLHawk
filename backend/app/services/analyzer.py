@@ -1,7 +1,6 @@
-from sqlalchemy import text
+from sqlalchemy import create_engine, text
 from sqlalchemy.engine import URL
 from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy import create_engine
 
 from .risk import score_findings
 from ..schemas.scan import TargetConnection
@@ -11,10 +10,13 @@ def run_scan(target: TargetConnection) -> dict:
     db_type = _normalize_db_type(target.db_type)
     url = _build_target_url(target, db_type)
     findings: list[dict] = []
+    engine = None
 
     try:
-        engine = create_engine(url, pool_pre_ping=True)
+        connect_args = _build_connect_args(target, db_type)
+        engine = create_engine(url, pool_pre_ping=True, connect_args=connect_args)
         with engine.connect() as connection:
+            _check_transport_security(connection, target, db_type, findings)
             if db_type == "postgres":
                 _postgres_checks(connection, findings)
             elif db_type == "mysql":
@@ -30,10 +32,11 @@ def run_scan(target: TargetConnection) -> dict:
             }
         )
     finally:
-        try:
-            engine.dispose()
-        except Exception:
-            pass
+        if engine is not None:
+            try:
+                engine.dispose()
+            except Exception:
+                pass
 
     _optional_port_check(target, db_type, findings)
 
@@ -80,15 +83,22 @@ def _build_target_url(target: TargetConnection, db_type: str) -> URL:
     )
 
 
+def _build_connect_args(target: TargetConnection, db_type: str) -> dict:
+    if db_type == "mysql" and target.ssl:
+        return {"ssl": {}}
+    return {}
+
+
 def _postgres_checks(connection, findings: list[dict]) -> None:
     access_limited = False
 
-    def safe_fetch(query: str):
+    def safe_fetch(query: str, mark_limited: bool = True):
         nonlocal access_limited
         try:
             return connection.execute(text(query)).fetchall()
         except Exception:
-            access_limited = True
+            if mark_limited:
+                access_limited = True
             return []
 
     superusers = safe_fetch("SELECT rolname FROM pg_roles WHERE rolsuper IS TRUE")
@@ -175,12 +185,13 @@ def _postgres_checks(connection, findings: list[dict]) -> None:
 def _mysql_checks(connection, findings: list[dict]) -> None:
     access_limited = False
 
-    def safe_fetch(query: str):
+    def safe_fetch(query: str, mark_limited: bool = True):
         nonlocal access_limited
         try:
             return connection.execute(text(query)).fetchall()
         except Exception:
-            access_limited = True
+            if mark_limited:
+                access_limited = True
             return []
 
     anonymous_users = safe_fetch("SELECT user, host FROM mysql.user WHERE user = ''")
@@ -225,6 +236,28 @@ def _mysql_checks(connection, findings: list[dict]) -> None:
             }
         )
 
+    empty_passwords = safe_fetch(
+        "SELECT user, host FROM mysql.user WHERE authentication_string = '' "
+        "OR authentication_string IS NULL",
+        mark_limited=False,
+    )
+    if not empty_passwords:
+        empty_passwords = safe_fetch(
+            "SELECT user, host FROM mysql.user WHERE password = '' OR password IS NULL",
+            mark_limited=False,
+        )
+    if empty_passwords:
+        names = ", ".join(f"{row[0]}@{row[1]}" for row in empty_passwords)
+        findings.append(
+            {
+                "title": "Accounts without passwords",
+                "description": "Some MySQL accounts have empty passwords.",
+                "severity": "critical",
+                "evidence": names,
+                "recommendation": "Set strong passwords and disable unused accounts.",
+            }
+        )
+
     local_infile = safe_fetch("SHOW VARIABLES LIKE 'local_infile'")
     if local_infile and str(local_infile[0][1]).lower() in {"on", "1"}:
         findings.append(
@@ -249,6 +282,57 @@ def _mysql_checks(connection, findings: list[dict]) -> None:
             }
         )
 
+    password_policy = safe_fetch("SHOW VARIABLES LIKE 'validate_password.policy'", mark_limited=False)
+    if password_policy:
+        value = str(password_policy[0][1]).lower()
+        if value in {"low", "0"}:
+            findings.append(
+                {
+                    "title": "Weak password policy",
+                    "description": "validate_password policy is low.",
+                    "severity": "medium",
+                    "evidence": value,
+                    "recommendation": "Set validate_password.policy to MEDIUM or STRONG.",
+                }
+            )
+    else:
+        findings.append(
+            {
+                "title": "Password policy not enforced",
+                "description": "validate_password plugin is not enabled.",
+                "severity": "low",
+                "evidence": None,
+                "recommendation": "Enable validate_password to enforce strong passwords.",
+            }
+        )
+
+    secure_file_priv = safe_fetch("SHOW VARIABLES LIKE 'secure_file_priv'", mark_limited=False)
+    if secure_file_priv and str(secure_file_priv[0][1]).strip() == "":
+        findings.append(
+            {
+                "title": "Unrestricted file import/export",
+                "description": "secure_file_priv is empty, allowing file access from any path.",
+                "severity": "medium",
+                "evidence": "(empty)",
+                "recommendation": "Set secure_file_priv to a restricted directory.",
+            }
+        )
+
+    password_lifetime = safe_fetch(
+        "SHOW VARIABLES LIKE 'default_password_lifetime'",
+        mark_limited=False,
+    )
+    if password_lifetime and str(password_lifetime[0][1]) in {"0", "-1"}:
+        findings.append(
+            {
+                "title": "Passwords never expire",
+                "description": "default_password_lifetime disables password rotation.",
+                "severity": "low",
+                "evidence": str(password_lifetime[0][1]),
+                "recommendation": "Set a password rotation policy.",
+            }
+        )
+
     if access_limited:
         findings.append(
             {
@@ -259,6 +343,49 @@ def _mysql_checks(connection, findings: list[dict]) -> None:
                 "recommendation": "Use a read-only account with access to system tables.",
             }
         )
+
+
+def _check_transport_security(connection, target: TargetConnection, db_type: str, findings: list[dict]) -> None:
+    ssl_active = None
+    try:
+        if db_type == "postgres":
+            rows = connection.execute(
+                text("SELECT ssl FROM pg_stat_ssl WHERE pid = pg_backend_pid()")
+            ).fetchall()
+            if rows:
+                ssl_active = bool(rows[0][0])
+        elif db_type == "mysql":
+            rows = connection.execute(text("SHOW STATUS LIKE 'Ssl_cipher'")).fetchall()
+            if rows:
+                ssl_active = bool(rows[0][1])
+    except Exception:
+        ssl_active = None
+
+    if ssl_active is False:
+        findings.append(
+            {
+                "title": "Connection not encrypted",
+                "description": "The database connection is not using TLS.",
+                "severity": "medium",
+                "evidence": None,
+                "recommendation": "Enable TLS and require encrypted connections.",
+            }
+        )
+    elif ssl_active is None and not target.ssl and not _is_local_host(target.host):
+        findings.append(
+            {
+                "title": "TLS not requested",
+                "description": "The scan connection was made without TLS enabled.",
+                "severity": "low",
+                "evidence": None,
+                "recommendation": "Enable TLS when scanning remote databases.",
+            }
+        )
+
+
+def _is_local_host(host: str) -> bool:
+    normalized = host.strip().lower()
+    return normalized in {"localhost", "127.0.0.1", "::1"}
 
 
 def _optional_port_check(
