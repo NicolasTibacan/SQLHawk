@@ -2,11 +2,14 @@ from pydantic import BaseModel, EmailStr, Field, field_validator
 
 
 PASSWORD_MIN_LENGTH = 12
+PASSWORD_MAX_LENGTH = 72
 
 
 def _validate_password(value: str) -> str:
     if len(value) < PASSWORD_MIN_LENGTH:
         raise ValueError("Password must be at least 12 characters long.")
+    if len(value) > PASSWORD_MAX_LENGTH:
+        raise ValueError(f"Password must be at most {PASSWORD_MAX_LENGTH} characters long.")
     if not any(char.islower() for char in value):
         raise ValueError("Password must include a lowercase letter.")
     if not any(char.isupper() for char in value):
@@ -26,7 +29,7 @@ class UserCreate(BaseModel):
     @field_validator("email")
     @classmethod
     def normalize_email(cls, value: EmailStr) -> EmailStr:
-        return EmailStr(str(value).strip().lower())
+        return str(value).strip().lower()
 
     @field_validator("password")
     @classmethod

@@ -605,7 +605,7 @@ def set_screen(screen: str) -> tuple[dict, dict, dict, dict, dict]:
     )
 
 
-with gr.Blocks(css=CSS, title="SQLHawk Frontend") as demo:
+with gr.Blocks(title="SQLHawk Frontend") as demo:
     token_state = gr.State("")
     user_state = gr.State({})
     scans_state = gr.State([])
@@ -907,7 +907,7 @@ with gr.Blocks(css=CSS, title="SQLHawk Frontend") as demo:
 
 
 def main() -> None:
-    demo.launch(server_name="0.0.0.0", server_port=DEFAULT_PORT, show_api=False)
+    demo.launch(server_name="0.0.0.0", server_port=DEFAULT_PORT, css=CSS)
 
 
 if __name__ == "__main__":
